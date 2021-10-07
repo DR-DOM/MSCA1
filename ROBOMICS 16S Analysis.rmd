@@ -1,0 +1,206 @@
+---
+title: "ROBOMICS 16S Analysis"
+author: "Wesley Sparagon"
+date: "7/9/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load libraries and custom functions.
+
+```{r}
+#Load libraries
+library(vegan)
+library(ggplot2)
+library(pairwiseAdonis)
+
+#Load functions
+source(file="cull.otu.script.R")
+source(file="generate.long.format.script.R")
+source(file="generate.square.dist.script.07.27.2020.R")
+source(file="zscore.calculation.script.R")
+```
+
+Load in data and metadata
+
+```{r}
+#load unifrac data
+unifrac=read.csv(file="otu_repr_100.tre1.wsummary.csv")
+
+#load relabund
+relabund=read.csv(file="abundance_table_100.database.csv")
+
+#load metadat
+metadata=read.csv(file="metadata.csv")
+```
+
+Work up metadata.
+
+```{r}
+#change inocculum and media factor levels
+metadata$Innoculum=factor(metadata$Innoculum,levels=c("Water Innoculum", "Coral Innoculum", "Algal Innoculum", "BACKREEF", "Unknown", "None"))
+metadata$Media=factor(metadata$Media,levels=c("Water DOM", "Coral DOM", "Algal DOM", "Blank", "None"))
+metadata$Timepoint..hours.=as.factor(metadata$Timepoint..hours.)
+
+#subset for just sterivex samples
+metadata1=metadata[metadata$Sample_Type=="Sterivex",]
+
+#subset metadata1 for just Aquaria and Backreef type samples
+metadata.inoc=subset(metadata1, Item=="Aquaria" | Item=="Backreef")
+
+#subset metadata.ino for just t0 samples.
+metadata.inoc.t0=metadata.inoc[metadata.inoc$Timepoint..hours.=="0",]
+
+#subset metadata1 for t0 innoculum and t0 bottle samples.
+metadata.t0=metadata1[metadata1$Timepoint..hours.=="0",]
+metadata.t0.v1=metadata.t0[-37,] #remove unknown sample
+
+```
+
+Work up unifrac.
+
+```{r}
+#generate squre dist
+generate.square.dist.matrix(unifrac,metadata.inoc,1)
+unifrac.matrix.inoc=dist.matrix1 #rename output
+unifrac.dist.inoc=square.dist.matrix #rename output
+
+#generate squre dist for inoc t0
+generate.square.dist.matrix(unifrac,metadata.inoc.t0,1)
+unifrac.matrix.inoc.t0=dist.matrix1 #rename output
+unifrac.dist.inoc.t0=square.dist.matrix #rename output
+
+#generate unifrac for t0 samples
+generate.square.dist.matrix(unifrac,metadata.t0.v1,1)
+unifrac.matrix.t0=dist.matrix1 #rename output
+unifrac.dist.t0=square.dist.matrix #rename output
+
+```
+
+Generate NMDS.
+
+```{r}
+nmds.inoc=metaMDS(unifrac.dist.inoc,k=2,trymax=100)
+```
+
+Work up NMDS.
+
+```{r}
+#extract scores
+nmds.inoc.scores=as.data.frame(scores(nmds.inoc))
+
+#add samplename column
+nmds.inoc.scores$SampleName=rownames(nmds.inoc.scores)
+
+#merge in metadata
+nmds.inoc.scores1=merge(nmds.inoc.scores,metadata.inoc,by.x="SampleName",by.y="Sample_ID")
+```
+
+Plot nmds in ggplot2.
+
+```{r}
+ggplot(nmds.inoc.scores1,aes(x=NMDS1,y=NMDS2,color=Innoculum,shape=Timepoint..hours.))+
+  geom_point(size=6)+
+  geom_line(aes(group=Innoculum_Replicate,color=Innoculum))
+  
+```
+
+NMDS looks good! Innoculum changes/differentiates from t-48 to t0, seperates by innoculum type, and water innoculum is most similar to the backreef samples (and differentiated the least from t-48 to t0).
+
+Next, test the effect of innoculum on t0 aquaria.
+
+```{r}
+permanova.inoc.t0 = adonis2(unifrac.dist.inoc.t0 ~ Innoculum, data=metadata.inoc.t0, permutations=999)
+permanova.inoc.t0 #innoculum is significant!
+
+#test pairwise comparisons
+pairwise.permanova.inoc.t0=pairwise.adonis(unifrac.dist.inoc.t0, factors = metadata.inoc.t0$Innoculum, p.adjust.m = "BH")
+pairwise.permanova.inoc.t0
+```
+
+Bacterial communities differ significantly by innoculum (as expected), although there were no significant pairwise differences, likely due to low sample size.
+
+Next, remove rare taxa.
+
+```{r}
+#work up relabund df.
+relabund1=relabund[,-234:-236] #remove taxonomy columns
+rownames(relabund1)=relabund1$OTUNumber #update rownames
+relabund2=relabund1[,-1] #remove otu names column
+relabund2.t=as.data.frame(t(relabund2)) #transpose relabund2
+
+#cull otu
+cull.otu(relabund2.t,3,.005,.01) #451 ASVs remain.
+
+#visualize ASV idstibution.
+hist(unlist(relabund2.t)) #with zeros
+hist(unlist(relabund2.t)[unlist(relabund2.t)!=0]) #without zeros
+hist(unlist(relabund.df.cull)[unlist(relabund.df.cull)!=0]) #after culling
+
+#save relabund.df.cull as new name.
+relabund2.t.cull=relabund.df.cull
+```
+
+
+Next, plot a stacked barchart of the innoculum and t0 bottle.
+
+```{r}
+#First, prep data frames for long format script.
+
+#work up relabund2.t.cull
+relabund2.cull=as.data.frame(t(relabund2.t.cull)) #transpose
+
+#work up taxonomy df
+taxonomy=relabund[,234:236] #extract taxonomy coumns.
+taxonomy1=cbind(taxonomy,t(as.data.frame(strsplit(as.character(taxonomy$OTUConTaxonomy),split=";")))) #split contaxonomy by ";", add to taxonomy df
+rownames(taxonomy1)=taxonomy1$repSeqName #change rownames
+colnames(taxonomy1)[c(1,4:9)]=c("OTUNumber","Domain","Phylum","Class","Order","Family","Genus") #update colnames
+taxonomy1.cull=taxonomy1[taxonomy1$OTUNumber %in% rownames(relabund2.cull),] #subset for only culled ASVs
+
+
+generate.long.format(relabund2.cull,metadata.t0.v1,taxonomy1.cull)
+
+#export as csv, generate stacked bar charts in JMP
+write.csv(abund.longformat,file="abund.longformat.csv")
+
+```
+
+Next, plot the t0 bottle samples with the innoculum samples. First, generate and work up NMDS.
+
+```{r}
+nmds.t0=metaMDS(unifrac.dist.t0,k=2,trymax=100)
+
+#extract scores
+nmds.t0.scores=as.data.frame(scores(nmds.t0))
+
+#add sample name column
+nmds.t0.scores$Sample_ID=rownames(nmds.t0.scores)
+
+#merge in metadata
+nmds.t0.scores1=merge(nmds.t0.scores,metadata.t0.v1)
+
+```
+
+Visualize.
+
+```{r}
+ggplot(nmds.t0.scores1,aes(x=NMDS1,y=NMDS2,shape=Item,fill=Innoculum,color=Media))+
+  geom_point(size=4)+
+  scale_shape_manual(values=c(24,21,0,0,0))+
+  scale_fill_manual(values=c("steelblue3","indianred1","springgreen3","black","black","black"))+
+  scale_color_manual(values=c("steelblue3","indianred1","springgreen3","black","black"))+
+  geom_text(aes(label=Sample_ID))
+  
+```
+
+Generally looks good. C3 innoculum aquaria and associated bottles appear to be outliers (check lab nb), this is consistent with the previous run. However, C3_w_t00_v1 appaeared to cluster with the rest of the C bottles and not the C3 outlier group. Include C3_w_t00_v1 and remove C3_w_t00.
+
+
+
+
+
